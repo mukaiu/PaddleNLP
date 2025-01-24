@@ -45,11 +45,11 @@ if [ ${MODE} = "lite_train_lite_infer" ];then
     fi
 
     if [ ${model_name} == "ernie_information_extraction" ]; then
-        python ../examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
+        python ../slm/examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
     fi
 
     if [[ ${model_name} =~ transformer* ]]; then
-        cd ../examples/machine_translation/transformer/
+        cd ../slm/examples/machine_translation/transformer/
 
         # The whole procedure of lite_train_infer should be less than 15min.
         # Hence, set maximum output length is 16. 
@@ -112,11 +112,11 @@ elif [ ${MODE} = "whole_train_whole_infer" ];then
     fi
 
     if [ ${model_name} == "ernie_information_extraction" ]; then
-        python ../examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
+        python ../slm/examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
     fi
 
     if [[ ${model_name} =~ transformer* ]]; then
-        cd ../examples/machine_translation/transformer/
+        cd ../slm/examples/machine_translation/transformer/
         sed -i "s/^max_out_len.*/max_out_len: 256/g" configs/transformer.base.yaml
         sed -i "s/^max_out_len.*/max_out_len: 1024/g" configs/transformer.big.yaml
 
@@ -176,11 +176,11 @@ elif [ ${MODE} = "lite_train_whole_infer" ];then
     fi
 
     if [ ${model_name} == "ernie_information_extraction" ]; then
-        python ../examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
+        python ../slm/examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
     fi
 
     if [[ ${model_name} =~ transformer* ]]; then
-        cd ../examples/machine_translation/transformer/
+        cd ../slm/examples/machine_translation/transformer/
         sed -i "s/^max_out_len.*/max_out_len: 256/g" configs/transformer.base.yaml
         sed -i "s/^max_out_len.*/max_out_len: 1024/g" configs/transformer.big.yaml
 
@@ -256,11 +256,11 @@ elif [ ${MODE} = "whole_infer" ];then
     fi
 
     if [ ${model_name} == "ernie_information_extraction" ]; then
-        python ../examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
+        python ../slm/examples/information_extraction/waybill_ie/download.py --data_dir ./waybill_ie
     fi
     
     if [[ ${model_name} =~ transformer* ]]; then
-        cd ../examples/machine_translation/transformer/
+        cd ../slm/examples/machine_translation/transformer/
         sed -i "s/^max_out_len.*/max_out_len: 256/g" configs/transformer.base.yaml
         sed -i "s/^max_out_len.*/max_out_len: 1024/g" configs/transformer.big.yaml
 
@@ -320,14 +320,11 @@ elif [ ${MODE} = "benchmark_train" ];then
 
         cd ..
 
-        python -m pip install h5py -i https://mirror.baidu.com/pypi/simple
+        python -m pip install h5py -i https://pip.baidu-int.com/simple
     fi
 
     if [[ ${model_name} == "gpt2" ]]; then
-        cd ../examples/language_model/gpt/data_tools/
-        sed -i "s/python3/python/g" Makefile
-        sed -i "s/python-config/python3.7m-config/g" Makefile
-        cd -
+        python -m pip install fast_dataindex -i https://pip.baidu-int.com/simple
         mkdir -p data && cd data
         wget https://bj.bcebos.com/paddlenlp/models/transformers/gpt/data/gpt_en_dataset_300m_ids.npy -o .tmp
         wget https://bj.bcebos.com/paddlenlp/models/transformers/gpt/data/gpt_en_dataset_300m_idx.npz -o .tmp
@@ -335,10 +332,7 @@ elif [ ${MODE} = "benchmark_train" ];then
     fi
 
     if [[ ${model_name} == "gpt3" ]]; then
-        cd ../examples/language_model/gpt-3/data_tools/
-        sed -i "s/python3/python/g" Makefile
-        sed -i "s/python-config/python3.7m-config/g" Makefile
-        cd -
+        python -m pip install fast_dataindex -i https://pip.baidu-int.com/simple
         mkdir -p data && cd data
         wget https://bj.bcebos.com/paddlenlp/models/transformers/gpt/data/gpt_en_dataset_300m_ids.npy -o .tmp
         wget https://bj.bcebos.com/paddlenlp/models/transformers/gpt/data/gpt_en_dataset_300m_idx.npz -o .tmp
@@ -346,7 +340,7 @@ elif [ ${MODE} = "benchmark_train" ];then
     fi
 
     if [[ ${model_name} =~ transformer* ]]; then
-        cd ../examples/machine_translation/transformer/
+        cd ../slm/examples/machine_translation/transformer/
 
         git checkout .
 
@@ -399,14 +393,36 @@ elif [ ${MODE} = "benchmark_train" ];then
         cd -
     fi
 
+    if [[ ${model_name} =~ "latent_diffusion_model" ]]; then
+        rm -rf laion400m_demo_data.tar.gz
+        wget https://paddlenlp.bj.bcebos.com/models/community/junnyu/develop/laion400m_demo_data.tar.gz
+        rm -rf data
+        tar -zxvf laion400m_demo_data.tar.gz
+    fi
+
+    if [[ ${model_name} =~ "stable_diffusion_model" ]]; then
+        rm -rf laion400m_demo_data.tar.gz
+        wget https://paddlenlp.bj.bcebos.com/models/community/junnyu/develop/laion400m_demo_data.tar.gz
+        rm -rf data
+        tar -zxvf laion400m_demo_data.tar.gz
+    fi
+
+    if [[ ${model_name} =~ "llama" ]]; then
+        rm -rf llama_sft_demo_data.tar.gz
+        wget https://paddlenlp.bj.bcebos.com/models/community/facebook/llama_sft_demo_data.tar.gz
+        tar -xvf llama_sft_demo_data.tar.gz
+    fi
+
     export PYTHONPATH=$(dirname "$PWD"):$PYTHONPATH
     python -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
+    python -m pip install einops -i https://pypi.tuna.tsinghua.edu.cn/simple
     python -m pip install setuptools_scm 
     python -m pip install Cython 
-    python -m pip install -r ../requirements.txt  -i https://pypi.tuna.tsinghua.edu.cn/simple
-    python -m pip install pybind11 regex sentencepiece tqdm visualdl attrdict pyyaml -i https://mirror.baidu.com/pypi/simple
+    python -m pip install -r ../requirements.txt  #-i https://pypi.tuna.tsinghua.edu.cn/simple
+    python -m pip install pybind11 regex sentencepiece tqdm visualdl attrdict easydict pyyaml rouge -i https://pip.baidu-int.com/simple
 
     python -m pip install -e ../
     # python -m pip install paddlenlp    # PDC 镜像中安装失败
     python -m pip list
+    cd -
 fi

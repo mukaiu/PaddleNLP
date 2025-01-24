@@ -123,3 +123,15 @@ FETCH_HEAD
 
 # vscode
 .vscode
+./ppdiffusers/ppdiffusers/version.py
+
+# third party
+csrc/third_party/
+dataset/
+output/
+
+# gen codes
+autogen/
+
+# cutlass kernel
+!csrc/gpu/cutlass_kernels/gemm/collective/builders

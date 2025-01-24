@@ -11,94 +11,75 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import hashlib
+import json
 import os
-import sys
 import os.path as osp
 import shutil
-import json
-import requests
-import hashlib
 import tarfile
-import zipfile
+import threading
 import time
 import uuid
-import threading
+import zipfile
 from collections import OrderedDict
-from .env import DOWNLOAD_SERVER, SUCCESS_STATUS, FAILED_STATUS
+from typing import Optional, Union
 
-try:
-    from tqdm import tqdm
-except:
+import paddle.distributed as dist
+import requests
+from filelock import FileLock
+from huggingface_hub import get_hf_file_metadata, hf_hub_url
+from huggingface_hub.utils import EntryNotFoundError
+from tqdm.auto import tqdm
 
-    class tqdm(object):
-
-        def __init__(self, total=None, **kwargs):
-            self.total = total
-            self.n = 0
-
-        def update(self, n):
-            self.n += n
-            if self.total is None:
-                sys.stderr.write("\r{0:.1f} bytes".format(self.n))
-            else:
-                sys.stderr.write("\r{0:.1f}%".format(100 * self.n /
-                                                     float(self.total)))
-            sys.stderr.flush()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            sys.stderr.write('\n')
-
-
+from .env import DOWNLOAD_SERVER, FAILED_STATUS, SUCCESS_STATUS
+from .fault_tolerance import PDC_DOWNLOAD_ERROR
 from .log import logger
+from .pdc_sdk import (
+    FLASH_DEVICE,
+    PDCErrorCode,
+    PDCErrorMessageMap,
+    pdc_flash_device_available,
+    pdc_tool,
+)
 
-__all__ = ['get_weights_path_from_url']
+__all__ = ["get_weights_path_from_url"]
 
-COMMUNITY_MODEL_PREFIX = "https://bj.bcebos.com/paddlenlp/models/community/"
+
+COMMUNITY_MODEL_PREFIX = os.getenv("COMMUNITY_MODEL_PREFIX", "https://bj.bcebos.com/paddlenlp/models/community")
 WEIGHTS_HOME = osp.expanduser("~/.cache/paddle/hapi/weights")
 DOWNLOAD_RETRY_LIMIT = 3
 DOWNLOAD_CHECK = False
 
-nlp_models = OrderedDict((
-    ('RoBERTa-zh-base',
-     'https://bert-models.bj.bcebos.com/chinese_roberta_wwm_ext_L-12_H-768_A-12.tar.gz'
-     ),
-    ('RoBERTa-zh-large',
-     'https://bert-models.bj.bcebos.com/chinese_roberta_wwm_large_ext_L-24_H-1024_A-16.tar.gz'
-     ),
-    ('ERNIE-v2-en-base',
-     'https://ernie.bj.bcebos.com/ERNIE_Base_en_stable-2.0.0.tar.gz'),
-    ('ERNIE-v2-en-large',
-     'https://ernie.bj.bcebos.com/ERNIE_Large_en_stable-2.0.0.tar.gz'),
-    ('XLNet-cased-base',
-     'https://xlnet.bj.bcebos.com/xlnet_cased_L-12_H-768_A-12.tgz'),
-    ('XLNet-cased-large',
-     'https://xlnet.bj.bcebos.com/xlnet_cased_L-24_H-1024_A-16.tgz'),
-    ('ERNIE-v1-zh-base',
-     'https://baidu-nlp.bj.bcebos.com/ERNIE_stable-1.0.1.tar.gz'),
-    ('ERNIE-v1-zh-base-max-len-512',
-     'https://ernie.bj.bcebos.com/ERNIE_1.0_max-len-512.tar.gz'),
-    ('BERT-en-uncased-large-whole-word-masking',
-     'https://bert-models.bj.bcebos.com/wwm_uncased_L-24_H-1024_A-16.tar.gz'),
-    ('BERT-en-cased-large-whole-word-masking',
-     'https://bert-models.bj.bcebos.com/wwm_cased_L-24_H-1024_A-16.tar.gz'),
-    ('BERT-en-uncased-base',
-     'https://bert-models.bj.bcebos.com/uncased_L-12_H-768_A-12.tar.gz'),
-    ('BERT-en-uncased-large',
-     'https://bert-models.bj.bcebos.com/uncased_L-24_H-1024_A-16.tar.gz'),
-    ('BERT-en-cased-base',
-     'https://bert-models.bj.bcebos.com/cased_L-12_H-768_A-12.tar.gz'),
-    ('BERT-en-cased-large',
-     'https://bert-models.bj.bcebos.com/cased_L-24_H-1024_A-16.tar.gz'),
-    ('BERT-multilingual-uncased-base',
-     'https://bert-models.bj.bcebos.com/multilingual_L-12_H-768_A-12.tar.gz'),
-    ('BERT-multilingual-cased-base',
-     'https://bert-models.bj.bcebos.com/multi_cased_L-12_H-768_A-12.tar.gz'),
-    ('BERT-zh-base',
-     'https://bert-models.bj.bcebos.com/chinese_L-12_H-768_A-12.tar.gz'),
-))
+nlp_models = OrderedDict(
+    (
+        ("RoBERTa-zh-base", "https://bert-models.bj.bcebos.com/chinese_roberta_wwm_ext_L-12_H-768_A-12.tar.gz"),
+        (
+            "RoBERTa-zh-large",
+            "https://bert-models.bj.bcebos.com/chinese_roberta_wwm_large_ext_L-24_H-1024_A-16.tar.gz",
+        ),
+        ("ERNIE-v2-en-base", "https://ernie.bj.bcebos.com/ERNIE_Base_en_stable-2.0.0.tar.gz"),
+        ("ERNIE-v2-en-large", "https://ernie.bj.bcebos.com/ERNIE_Large_en_stable-2.0.0.tar.gz"),
+        ("XLNet-cased-base", "https://xlnet.bj.bcebos.com/xlnet_cased_L-12_H-768_A-12.tgz"),
+        ("XLNet-cased-large", "https://xlnet.bj.bcebos.com/xlnet_cased_L-24_H-1024_A-16.tgz"),
+        ("ERNIE-v1-zh-base", "https://baidu-nlp.bj.bcebos.com/ERNIE_stable-1.0.1.tar.gz"),
+        ("ERNIE-v1-zh-base-max-len-512", "https://ernie.bj.bcebos.com/ERNIE_1.0_max-len-512.tar.gz"),
+        (
+            "BERT-en-uncased-large-whole-word-masking",
+            "https://bert-models.bj.bcebos.com/wwm_uncased_L-24_H-1024_A-16.tar.gz",
+        ),
+        (
+            "BERT-en-cased-large-whole-word-masking",
+            "https://bert-models.bj.bcebos.com/wwm_cased_L-24_H-1024_A-16.tar.gz",
+        ),
+        ("BERT-en-uncased-base", "https://bert-models.bj.bcebos.com/uncased_L-12_H-768_A-12.tar.gz"),
+        ("BERT-en-uncased-large", "https://bert-models.bj.bcebos.com/uncased_L-24_H-1024_A-16.tar.gz"),
+        ("BERT-en-cased-base", "https://bert-models.bj.bcebos.com/cased_L-12_H-768_A-12.tar.gz"),
+        ("BERT-en-cased-large", "https://bert-models.bj.bcebos.com/cased_L-24_H-1024_A-16.tar.gz"),
+        ("BERT-multilingual-uncased-base", "https://bert-models.bj.bcebos.com/multilingual_L-12_H-768_A-12.tar.gz"),
+        ("BERT-multilingual-cased-base", "https://bert-models.bj.bcebos.com/multi_cased_L-12_H-768_A-12.tar.gz"),
+        ("BERT-zh-base", "https://bert-models.bj.bcebos.com/chinese_L-12_H-768_A-12.tar.gz"),
+    )
+)
 
 
 def is_url(path):
@@ -107,7 +88,7 @@ def is_url(path):
     Args:
         path (string): URL string or not.
     """
-    return path.startswith('http://') or path.startswith('https://')
+    return path.startswith("http://") or path.startswith("https://")
 
 
 def get_weights_path_from_url(url, md5sum=None):
@@ -116,7 +97,7 @@ def get_weights_path_from_url(url, md5sum=None):
     Args:
         url (str): download url
         md5sum (str): md5 sum of download package
-    
+
     Returns:
         str: a local path to save downloaded weights.
     Examples:
@@ -137,7 +118,7 @@ def _map_path(url, root_dir):
 
 
 def get_path_from_url(url, root_dir, md5sum=None, check_exist=True):
-    """ Download from given url to root_dir.
+    """Download from given url to root_dir.
     if file or directory specified by url is exists under
     root_dir, return the path directly, otherwise download
     from url and decompress it, return the path.
@@ -146,12 +127,10 @@ def get_path_from_url(url, root_dir, md5sum=None, check_exist=True):
         root_dir (str): root dir for downloading, it should be
                         WEIGHTS_HOME or DATASET_HOME
         md5sum (str): md5 sum of download package
-    
+
     Returns:
         str: a local path to save downloaded models & weights & datasets.
     """
-
-    from paddle.distributed import ParallelEnv
 
     assert is_url(url), "downloading from {} not a url".format(url)
     # parse path after download to decompress under root_dir
@@ -160,17 +139,44 @@ def get_path_from_url(url, root_dir, md5sum=None, check_exist=True):
     if osp.exists(fullpath) and check_exist and _md5check(fullpath, md5sum):
         logger.info("Found {}".format(fullpath))
     else:
-        if ParallelEnv().local_rank % 8 == 0:
-            fullpath = _download(url, root_dir, md5sum)
-        else:
-            while not os.path.exists(fullpath):
-                time.sleep(1)
+        fullpath = _download(url, root_dir, md5sum)
 
-    if ParallelEnv().local_rank % 8 == 0:
-        if tarfile.is_tarfile(fullpath) or zipfile.is_zipfile(fullpath):
-            fullpath = _decompress(fullpath)
+    if tarfile.is_tarfile(fullpath) or zipfile.is_zipfile(fullpath):
+        fullpath = _decompress(fullpath)
 
+    # model tokenizer config, [file-lock]
     return fullpath
+
+
+def get_path_from_url_with_filelock(
+    url: str, root_dir: str, md5sum: Optional[str] = None, check_exist: bool = True, timeout: float = -1
+) -> str:
+    """construct `get_path_from_url` for `model_utils` to enable downloading multiprocess-safe
+
+    Args:
+        url (str): the url of resource file
+        root_dir (str): the local download path
+        md5sum (str, optional): md5sum string for file. Defaults to None.
+        check_exist (bool, optional): whether check the file is exist. Defaults to True.
+        timeout (int, optional): the timeout for downloading. Defaults to -1.
+
+    Returns:
+        str: the path of downloaded file
+    """
+
+    os.makedirs(root_dir, exist_ok=True)
+
+    # create lock file, which is empty, under the `LOCK_FILE_HOME` directory.
+    lock_file_name = hashlib.md5((url + root_dir).encode("utf-8")).hexdigest()
+
+    # create `.lock` private directory in the cache dir
+    lock_file_path = os.path.join(root_dir, ".lock", lock_file_name)
+
+    os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+
+    with FileLock(lock_file_path, timeout=timeout):
+        result = get_path_from_url(url=url, root_dir=root_dir, md5sum=md5sum, check_exist=check_exist)
+    return result
 
 
 def _download(url, path, md5sum=None):
@@ -179,8 +185,7 @@ def _download(url, path, md5sum=None):
     url (str): download url
     path (str): download to given path
     """
-    if not osp.exists(path):
-        os.makedirs(path)
+    os.makedirs(path, exist_ok=True)
 
     fname = osp.split(url)[-1]
     fullname = osp.join(path, fname)
@@ -190,27 +195,22 @@ def _download(url, path, md5sum=None):
         if retry_cnt < DOWNLOAD_RETRY_LIMIT:
             retry_cnt += 1
         else:
-            raise RuntimeError("Download from {} failed. "
-                               "Retry limit reached".format(url))
+            raise RuntimeError("Download from {} failed. " "Retry limit reached".format(url))
 
         logger.info("Downloading {} from {}".format(fname, url))
 
         req = requests.get(url, stream=True)
         if req.status_code != 200:
-            raise RuntimeError("Downloading from {} failed with code "
-                               "{}!".format(url, req.status_code))
+            raise RuntimeError("Downloading from {} failed with code " "{}!".format(url, req.status_code))
 
         # For protecting download interupted, download to
         # tmp_fullname firstly, move tmp_fullname to fullname
         # after download finished
         tmp_fullname = fullname + "_tmp"
-        total_size = req.headers.get('content-length')
-        with open(tmp_fullname, 'wb') as f:
+        total_size = req.headers.get("content-length")
+        with open(tmp_fullname, "wb") as f:
             if total_size:
-                with tqdm(total=int(total_size),
-                          unit='B',
-                          unit_scale=True,
-                          unit_divisor=1024) as pbar:
+                with tqdm(total=int(total_size), unit="B", unit_scale=True, unit_divisor=1024) as pbar:
                     for chunk in req.iter_content(chunk_size=1024):
                         f.write(chunk)
                         pbar.update(len(chunk))
@@ -229,14 +229,13 @@ def _md5check(fullname, md5sum=None):
 
     logger.info("File {} md5 checking...".format(fullname))
     md5 = hashlib.md5()
-    with open(fullname, 'rb') as f:
+    with open(fullname, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
             md5.update(chunk)
     calc_md5sum = md5.hexdigest()
 
     if calc_md5sum != md5sum:
-        logger.info("File {} md5 check failed, {}(calc) != "
-                    "{}(base)".format(fullname, calc_md5sum, md5sum))
+        logger.info("File {} md5 check failed, {}(calc) != " "{}(base)".format(fullname, calc_md5sum, md5sum))
         return False
     return True
 
@@ -272,7 +271,7 @@ def _decompress(fname):
 
 
 def _uncompress_file_zip(filepath):
-    files = zipfile.ZipFile(filepath, 'r')
+    files = zipfile.ZipFile(filepath, "r")
     file_list = files.namelist()
 
     file_dir = os.path.dirname(filepath)
@@ -339,10 +338,10 @@ def _is_a_single_file(file_list):
 def _is_a_single_dir(file_list):
     new_file_list = []
     for file_path in file_list:
-        if '/' in file_path:
-            file_path = file_path.replace('/', os.sep)
-        elif '\\' in file_path:
-            file_path = file_path.replace('\\', os.sep)
+        if "/" in file_path:
+            file_path = file_path.replace("/", os.sep)
+        elif "\\" in file_path:
+            file_path = file_path.replace("\\", os.sep)
         new_file_list.append(file_path)
 
     file_name = new_file_list[0].split(os.sep)[0]
@@ -366,12 +365,12 @@ class DownloaderCheck(threading.Thread):
 
     def uri_path(self, server_url, api):
         srv = server_url
-        if server_url.endswith('/'):
+        if server_url.endswith("/"):
             srv = server_url[:-1]
-        if api.startswith('/'):
+        if api.startswith("/"):
             srv += api
         else:
-            api = '/' + api
+            api = "/" + api
             srv += api
         return srv
 
@@ -383,39 +382,41 @@ class DownloaderCheck(threading.Thread):
     def request_check(self, task, command, addition):
         if task is None:
             return SUCCESS_STATUS
-        payload = {'word': self.task}
-        api_url = self.uri_path(DOWNLOAD_SERVER, 'stat')
+        payload = {"word": self.task}
+        api_url = self.uri_path(DOWNLOAD_SERVER, "stat")
         cache_path = os.path.join("～")
         if os.path.exists(cache_path):
             extra = {
                 "command": self.command,
                 "mtime": os.stat(cache_path).st_mtime,
                 "hub_name": self.hash_flag,
-                "cache_info": self.full_hash_flag
+                "cache_info": self.full_hash_flag,
             }
         else:
             extra = {
                 "command": self.command,
                 "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 "hub_name": self.hash_flag,
-                "cache_info": self.full_hash_flag
+                "cache_info": self.full_hash_flag,
             }
         if addition is not None:
             extra.update({"addition": addition})
         try:
             import paddle
+
             import paddlenlp
-            payload['hub_version'] = " "
-            payload['ppnlp_version'] = paddlenlp.__version__
-            payload['paddle_version'] = paddle.__version__.split('-')[0]
-            payload['from'] = 'ppnlp'
-            payload['extra'] = json.dumps(extra)
+
+            payload["hub_version"] = " "
+            payload["ppnlp_version"] = paddlenlp.__version__
+            payload["paddle_version"] = paddle.__version__.split("-")[0]
+            payload["from"] = "ppnlp"
+            payload["extra"] = json.dumps(extra)
             r = requests.get(api_url, payload, timeout=1).json()
             if r.get("update_cache", 0) == 1:
                 return SUCCESS_STATUS
             else:
                 return FAILED_STATUS
-        except Exception as err:
+        except Exception:
             return FAILED_STATUS
 
     def run(self):
@@ -431,3 +432,161 @@ def download_check(model_id, model_class, addition=None):
         checker.start()
         checker.join()
     logger.enable()
+
+
+def url_file_exists(url: str) -> bool:
+    """check whether the url file exists
+
+        refer to: https://stackoverflow.com/questions/2486145/python-check-if-url-to-jpg-exists
+
+    Args:
+        url (str): the url of target file
+
+    Returns:
+        bool: whether the url file exists
+    """
+    if not is_url(url):
+        return False
+
+    result = requests.head(url)
+    return result.status_code == requests.codes.ok
+
+
+def hf_file_exists(
+    repo_id: str, filename: str, token: Union[bool, str, None] = None, subfolder: Optional[str] = None
+) -> bool:
+    """Check whether the HF file exists
+
+    Args:
+        repo_id (`str`): A namespace (user or an organization) name and a repo name separated by a `/`.
+        filename (`str`): The name of the file in the repo.
+        token (`str` or `bool`, *optional*): A token to be used for the download.
+            - If `True`, the token is read from the HuggingFace config folder.
+            - If `False` or `None`, no token is provided.
+            - If a string, it's used as the authentication token.
+        subfolder (str, optional) An optional value corresponding to a folder inside the repo.
+    Returns:
+        bool: whether the HF file exists
+    """
+
+    url = hf_hub_url(repo_id=repo_id, filename=filename, subfolder=subfolder)
+    try:
+        _ = get_hf_file_metadata(
+            url=url,
+            token=token,
+        )
+        return True
+    except EntryNotFoundError:
+        return False
+
+
+def download_from_pdc(remote_path, local_path, timeout):
+    """Download from remote_path and place to a local_path through PaddleCloud. remote_path has to be uploaded through PaddleCloud as well.
+
+
+    Args:
+        remote_path (`str`):
+            remote path url for download
+        local_path (`str`):
+            local path to place downloaded object
+        timeout (`int`):
+            max wait time for download
+    """
+
+    try:
+        base_dir, _ = os.path.split(os.path.normpath(local_path))
+        if not os.path.exists(base_dir) and base_dir != "":
+            os.makedirs(base_dir, exist_ok=True)
+    except Exception as e:
+        raise RuntimeError(f"{PDC_DOWNLOAD_ERROR}; Failed to parse checkpoint path, details: {e}")
+    start_time = time.time()
+    result = pdc_tool.pdc_download(remote_path, local_path, timeout)
+    end_time = time.time()
+    if result == PDCErrorCode.Success:
+        logger.info(f"Successfully downloaded object from PDC, total time cost: {end_time - start_time} seconds.")
+    elif result == PDCErrorCode.LocalPathExist:
+        logger.warning(
+            f"Skipping download object since file exists at local, total time cost: {end_time - start_time} seconds."
+        )
+    else:
+        raise RuntimeError(
+            f"{PDC_DOWNLOAD_ERROR}; Error occurred when trying to download object from PDC, remote_path: {remote_path}, local_path: {local_path}, timeout: {timeout}; error details: {PDCErrorMessageMap[result]}"
+        )
+
+
+def get_static_model_on_pdc(remote_path, local_path, timeout, enable_flash_device=False):
+    """
+    Get static model from PDC. Use flash device if possible.
+    This function has to be called after distributed env is initialized in distributed mode.
+    Args:
+        remote_path (`str`):
+            remote path url for download
+        local_path (`str`):
+            local path to place downloaded object
+        timeout (`int`):
+            max wait time for download
+        enable_flash_device (`bool`):
+            Whether to use flash device
+    Returns:
+        str: path to load static model
+    """
+    try:
+        base_dir, target_dir = os.path.split(os.path.normpath(local_path))
+        if not os.path.exists(base_dir) and base_dir != "":
+            os.makedirs(base_dir, exist_ok=True)
+    except Exception as e:
+        raise RuntimeError(f"{PDC_DOWNLOAD_ERROR}; Failed to parse checkpoint path, details: {e}")
+
+    assert target_dir != ".", f"{PDC_DOWNLOAD_ERROR}, illegal local_path: {local_path}."
+
+    flash_path = os.path.join(FLASH_DEVICE, target_dir)
+    persistent_path = local_path
+
+    device_id = int(os.getenv("FLAGS_selected_gpus", "0"))
+    if device_id != 0:
+        logger.info("Waiting local process 0...")
+        dist.barrier()
+        return flash_path if (enable_flash_device and os.path.exists(flash_path)) else persistent_path
+
+    # step 1: load from flash device if possible
+    need_download_from_remote = True
+    need_backup_to_flash = False
+    if enable_flash_device and pdc_flash_device_available():
+        logger.info(f"flash device is available, checking status on {flash_path}...")
+        # skip download SC as default when flash device is available
+        need_download_from_remote = False
+        if os.path.exists(flash_path) and pdc_tool.pdc_flash_do_check(flash_path) == PDCErrorCode.Success:
+            logger.info("Static model checked successfully on flash device, ready to load...")
+        else:
+            logger.warning(
+                "flash device is available but no valid static model found on flash device, need to download from remote."
+            )
+            need_download_from_remote = True
+            need_backup_to_flash = True
+    else:
+        logger.info("Flash device is not enabled or available, will download static model from remote.")
+
+    # step 2: download from remote if neccesary
+    if need_download_from_remote:
+        logger.info("Beging download static model from remote...")
+        download_from_pdc(remote_path, persistent_path, timeout)
+        logger.info(f"downloaded static model from remote, path:{persistent_path}")
+
+    # step 3: backup to flash device if flash device is available
+    if enable_flash_device and need_backup_to_flash:
+        result = pdc_tool.pdc_backup_to_flash_device(persistent_path, flash_path)
+        if result == PDCErrorCode.Success:
+            logger.info(f"Backup static model to flash device {flash_path} successfully.")
+        else:
+            logger.error(f"Backup static model to flash device failed, error details: {PDCErrorMessageMap[result]}.")
+
+    # step 4: return flash path if available, otherwise return persistent path
+    if dist.get_world_size() > 1:
+        logger.info("Local node process done, waiting other nodes...")
+        dist.barrier()
+    if enable_flash_device and os.path.exists(flash_path):
+        logger.info(f"static model is ready on flash device, path: {flash_path}")
+        return flash_path
+    else:
+        logger.info(f"static model is only ready on persistent storage, path: {persistent_path}")
+        return persistent_path

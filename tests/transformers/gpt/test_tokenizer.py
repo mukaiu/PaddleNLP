@@ -17,7 +17,7 @@ import json
 import os
 import unittest
 
-from paddlenlp.transformers import GPTTokenizer
+from paddlenlp.transformers import GPTTokenizer, GPTTokenizerFast
 
 from ..test_tokenizer_common import TokenizerTesterMixin
 
@@ -30,9 +30,10 @@ VOCAB_FILES_NAMES = {
 class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
     tokenizer_class = GPTTokenizer
+    rust_tokenizer_class = GPTTokenizerFast
+    test_rust_tokenizer = True
     from_pretrained_kwargs = {"add_prefix_space": True}
     test_seq2seq = False
-    test_offsets = False
 
     def setUp(self):
         super().setUp()
@@ -62,15 +63,11 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
             "<|endoftext|>",
         ]
         vocab_tokens = dict(zip(vocab, range(len(vocab))))
-        merges = [
-            "#version: 0.2", "\u0120 l", "\u0120l o", "\u0120lo w", "e r", ""
-        ]
+        merges = ["#version: 0.2", "\u0120 l", "\u0120l o", "\u0120lo w", "e r", ""]
         self.special_tokens_map = {"unk_token": "<unk>"}
 
-        self.vocab_file = os.path.join(self.tmpdirname,
-                                       VOCAB_FILES_NAMES["vocab_file"])
-        self.merges_file = os.path.join(self.tmpdirname,
-                                        VOCAB_FILES_NAMES["merges_file"])
+        self.vocab_file = os.path.join(self.tmpdirname, VOCAB_FILES_NAMES["vocab_file"])
+        self.merges_file = os.path.join(self.tmpdirname, VOCAB_FILES_NAMES["merges_file"])
         with open(self.vocab_file, "w", encoding="utf-8") as fp:
             fp.write(json.dumps(vocab_tokens) + "\n")
         with open(self.merges_file, "w", encoding="utf-8") as fp:
@@ -80,14 +77,17 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
         kwargs.update(self.special_tokens_map)
         return GPTTokenizer.from_pretrained(self.tmpdirname, **kwargs)
 
+    def get_rust_tokenizer(self, **kwargs):
+        kwargs.update(self.special_tokens_map)
+        return GPTTokenizerFast.from_pretrained(self.tmpdirname, **kwargs)
+
     def get_input_output_texts(self, tokenizer):
         input_text = "lower newer"
         output_text = "lower newer"
         return input_text, output_text
 
     def test_full_tokenizer(self):
-        tokenizer = GPTTokenizer(self.vocab_file, self.merges_file,
-                                 **self.special_tokens_map)
+        tokenizer = GPTTokenizer(self.vocab_file, self.merges_file, **self.special_tokens_map)
         text = "lower newer"
         bpe_tokens = ["\u0120low", "er", "\u0120", "n", "e", "w", "er"]
         tokens = tokenizer.tokenize(text, add_prefix_space=True)
@@ -95,15 +95,44 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
         input_tokens = tokens + [tokenizer.unk_token]
         input_bpe_tokens = [14, 15, 10, 9, 3, 2, 15, 19]
-        self.assertListEqual(tokenizer.convert_tokens_to_ids(input_tokens),
-                             input_bpe_tokens)
+
+        self.assertListEqual(tokenizer.convert_tokens_to_ids(input_tokens), input_bpe_tokens)
+
+    def test_rust_and_python_full_tokenizers(self):
+        if not self.test_rust_tokenizer:
+            self.skipTest(reason="test_rust_tokenizer is set to False")
+
+        tokenizer = self.get_tokenizer()
+        rust_tokenizer = self.get_rust_tokenizer(add_prefix_space=True)
+
+        sequence = "lower newer"
+
+        # Testing tokenization
+        tokens = tokenizer.tokenize(sequence, add_prefix_space=True)
+        rust_tokens = rust_tokenizer.tokenize(sequence)
+        self.assertListEqual(tokens, rust_tokens)
+
+        # Testing conversion to ids without special tokens
+        ids = tokenizer.encode(sequence, add_special_tokens=False, add_prefix_space=True)["input_ids"]
+        rust_ids = rust_tokenizer.encode(sequence, add_special_tokens=False)["input_ids"]
+        self.assertListEqual(ids, rust_ids)
+
+        # Testing conversion to ids with special tokens
+        rust_tokenizer = self.get_rust_tokenizer(add_prefix_space=True)
+        ids = tokenizer.encode(sequence, add_prefix_space=True)["input_ids"]
+        rust_ids = rust_tokenizer.encode(sequence)["input_ids"]
+        self.assertListEqual(ids, rust_ids)
+
+        # Testing the unknown token
+        input_tokens = tokens + [rust_tokenizer.unk_token]
+        input_bpe_tokens = [14, 15, 10, 9, 3, 2, 15, 19]
+        self.assertListEqual(rust_tokenizer.convert_tokens_to_ids(input_tokens), input_bpe_tokens)
 
     def test_pretokenized_inputs(self, *args, **kwargs):
         pass
 
     def test_padding_if_pad_token_set_slow(self):
-        tokenizer = GPTTokenizer.from_pretrained(self.tmpdirname,
-                                                 pad_token="<pad>")
+        tokenizer = GPTTokenizer.from_pretrained(self.tmpdirname, pad_token="<pad>")
 
         # Simple input
         s = "This is a simple input"
@@ -116,26 +145,10 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
         pad_token_id = tokenizer.pad_token_id
 
-        out_s = tokenizer(s,
-                          padding="max_length",
-                          max_length=30,
-                          return_tensors="np",
-                          return_attention_mask=True)
-        out_s2 = tokenizer(s2,
-                           padding=True,
-                           truncate=True,
-                           return_tensors="np",
-                           return_attention_mask=True)
-        out_p = tokenizer(*p,
-                          padding="max_length",
-                          max_length=60,
-                          return_tensors="np",
-                          return_attention_mask=True)
-        out_p2 = tokenizer(p2,
-                           padding=True,
-                           truncate=True,
-                           return_tensors="np",
-                           return_attention_mask=True)
+        out_s = tokenizer(s, padding="max_length", max_length=30, return_tensors="np", return_attention_mask=True)
+        out_s2 = tokenizer(s2, padding=True, truncate=True, return_tensors="np", return_attention_mask=True)
+        out_p = tokenizer(*p, padding="max_length", max_length=60, return_tensors="np", return_attention_mask=True)
+        out_p2 = tokenizer(p2, padding=True, truncate=True, return_tensors="np", return_attention_mask=True)
 
         # s
         # test single string max_length padding
@@ -171,9 +184,7 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
     def test_add_bos_token_slow(self):
         bos_token = "$$$"
-        tokenizer = GPTTokenizer.from_pretrained(self.tmpdirname,
-                                                 bos_token=bos_token,
-                                                 add_bos_token=True)
+        tokenizer = GPTTokenizer.from_pretrained(self.tmpdirname, bos_token=bos_token, add_bos_token=True)
 
         s = "This is a simple input"
         s2 = ["This is a simple input 1", "This is a simple input 2"]
@@ -198,10 +209,18 @@ class GPTTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
     def test_pretrained_model_lists(self):
         # No max_model_input_sizes
-        self.assertGreaterEqual(
-            len(self.tokenizer_class.pretrained_resource_files_map), 1)
-        self.assertGreaterEqual(
-            len(
-                list(
-                    self.tokenizer_class.pretrained_resource_files_map.values())
-                [0]), 1)
+        self.assertGreaterEqual(len(self.tokenizer_class.pretrained_resource_files_map), 1)
+        self.assertGreaterEqual(len(list(self.tokenizer_class.pretrained_resource_files_map.values())[0]), 1)
+
+    def test_consecutive_unk_string(self):
+        tokenizers = self.get_tokenizers(fast=True, do_lower_case=True)
+        for tokenizer in tokenizers:
+            tokens = [tokenizer.unk_token for _ in range(2)]
+            string = tokenizer.convert_tokens_to_string(tokens)
+            encoding = tokenizer(
+                text=string,
+                runcation=True,
+                return_offsets_mapping=True,
+            )
+            self.assertEqual(len(encoding["input_ids"]), 2)
+            self.assertEqual(len(encoding["offset_mapping"]), 2)

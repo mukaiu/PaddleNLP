@@ -22,7 +22,8 @@
 * GitHub Issue反馈: https://github.com/PaddlePaddle/PaddleNLP/issues
 * 微信交流群: 微信扫描二维码并填写问卷之后，即可加入交流群，与众多社区开发者以及官方团队深度交流。
 
-.. image:: https://user-images.githubusercontent.com/11793384/184784832-bb97930f-a738-4480-99be-517aeb65afac.png
+.. image:: https://github.com/user-attachments/assets/3a58cc9f-69c7-4ccb-b6f5-73e966b8051a
+   :width: 200px
    :align: center
    :alt: paddlenlp微信交流群二维码
 
@@ -32,6 +33,7 @@
 
    安装 <get_started/installation>
    10分钟完成高精度中文情感分析 <get_started/quick_start>
+   对话模板 <get_started/chat_template>
 
 .. toctree::
    :maxdepth: 1
@@ -45,13 +47,30 @@
 
 .. toctree::
    :maxdepth: 1
+   :caption: 飞桨大模型
+
+   大模型预训练文档 <llm/docs/pretrain.rst>
+   大模型精调文档 <llm/docs/finetune.md>
+   大模型FlashMask算法 <llm/docs/flashmask.md>
+   大模型常用算法文档 <llm/docs/algorithm_overview.md>
+   大模型RLHF文档 <llm/docs/rlhf.md>
+   大模型量化教程 <llm/docs/quantization.md>
+   大模型推理教程 <llm/docs/inference.md>
+   大模型统一存储文档 <llm/docs/unified_checkpoint.md>
+   混合并行训练教程 <llm/docs/llm_trainer.rst>
+   模型权重转换教程 <llm/docs/torch2paddle.md>
+   大模型DPO文档 <llm/docs/dpo.md>
+
+.. toctree::
+   :maxdepth: 1
    :caption: 模型库
 
    Transformer预训练模型 <model_zoo/index>
    使用Trainer API训练 <trainer.md>
+   使用Trainer API进行模型压缩 <compression.md>
    一键预测功能 <model_zoo/taskflow>
    预训练词向量 <model_zoo/embeddings>
-   
+
 
 .. toctree::
    :maxdepth: 1
@@ -70,7 +89,7 @@
    :caption: 进阶指南
 
    模型压缩 <advanced_guide/model_compression/index>
-   文本生成高性能加速 <advanced_guide/fastergeneration/index>
+   文本生成高性能加速 <advanced_guide/fastgeneration/index>
    大规模分布式训练 <advanced_guide/distributed_training>
 
 .. toctree::

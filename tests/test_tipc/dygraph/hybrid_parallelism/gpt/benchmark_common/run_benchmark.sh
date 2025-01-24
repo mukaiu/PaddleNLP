@@ -66,7 +66,7 @@ function _train(){
     mkdir $OUTPUT_PATH
 
     # if [ ${model_item} = "gpt3_moe" ];then
-    #     static_scripts="../examples/language_model/gpt-moe/dygraph/"
+    #     static_scripts="../slm/model_zoo/gpt-moe/dygraph/"
     # else
     #     echo "not supported model item: ${model_item}"; exit 1;
     # fi
@@ -92,8 +92,7 @@ function _train(){
     model_config="gpt2-medium-en"
     [ ${mp_degree} -lt 8 ] && model_config="gpt2-small-en"
     if [ "fp16" = ${fp_item} ]; then use_pure_fp16=True; fi
-    train_cmd="--model_type gpt \
-                --model_name_or_path ${model_config} \
+    train_cmd="--model_name_or_path ${model_config} \
                 --input_dir ./data\
                 --output_dir output\
                 --weight_decay 0.01\
@@ -116,36 +115,41 @@ function _train(){
                 --sharding_stage ${sharding_stage}\
                 --sharding_offload ${sharding_offload}\
                 --fuse_transformer True"
-
+    if [ ${PADDLE_TRAINER_ID} ]
+    then
+        PADDLE_RANK_OPTION=" --rank ${PADDLE_TRAINER_ID}"
+    else
+        PADDLE_RANK_OPTION=""
+    fi
     # 以下为通用执行命令，无特殊可不用修改
     if [ "N1C2" = ${device_num} ]; then
         # sharding case
         echo "run run_mode: DP1-MP1-PP1 device_num: N1C2"
-        train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1 \
+        train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1 ${PADDLE_RANK_OPTION}\
               run_pretrain.py ${train_cmd}" 
         workerlog_id=0
     else
         # hybrid_parallelism case
         case ${run_mode} in
         DP1-MP1-PP1) echo "run run_mode: DP1-MP1-PP1"
-            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0 \
+            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0 ${PADDLE_RANK_OPTION}\
                 run_pretrain.py ${train_cmd}"
             workerlog_id=0
             ;;
         DP1-MP1-PP4|DP1-MP4-PP1) echo "run run_mode: ${run_mode}"
-            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1,2,3 \
+            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1,2,3 ${PADDLE_RANK_OPTION}\
                 run_pretrain.py ${train_cmd}"
             workerlog_id=0
             ;;
         DP1-MP2-PP4|DP1-MP4-PP2|DP2-MP2-PP2|DP2-MP8-PP2|DP4-MP8-PP1|DP1-MP8-PP4) echo "run run_mode: ${run_mode}"
-            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1,2,3,4,5,6,7 \
+            train_cmd="python -m paddle.distributed.launch --log_dir=./mylog --gpus=0,1,2,3,4,5,6,7 ${PADDLE_RANK_OPTION}\
                 run_pretrain.py ${train_cmd}"
             workerlog_id=0
             ;;
         *) echo "choose run_mode "; exit 1;
         esac
     fi
-    cd ../examples/language_model/gpt-3/dygraph/
+    cd ../slm/model_zoo/gpt-3/dygraph/
     echo "train_cmd: ${train_cmd}  log_file: ${log_file}"
     python -c "import paddlenlp"
     if [[ ${model_item} =~ "CE" ]];then # CE精度-不限制执行时间
